@@ -1,0 +1,7 @@
+{
+    "git.ignoreLimitWarning": true,
+    "python.analysis.extraPaths": [
+        "/home/luoteng/anaconda3/envs/py38_ros/lib/python3.8/site-packages",
+        "./data_utils"
+    ]
+}

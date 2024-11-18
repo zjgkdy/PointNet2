@@ -4,7 +4,7 @@ from pointnet2_utils import PointNetSetAbstraction
 
 
 class get_model(nn.Module):
-    def __init__(self,num_class,normal_channel=True):
+    def __init__(self, num_class, normal_channel=True):
         super(get_model, self).__init__()
         in_channel = 6 if normal_channel else 3
         self.normal_channel = normal_channel
@@ -26,18 +26,16 @@ class get_model(nn.Module):
             xyz = xyz[:, :3, :]
         else:
             norm = None
-        l1_xyz, l1_points = self.sa1(xyz, norm)
-        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
-        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
-        x = l3_points.view(B, 1024)
-        x = self.drop1(F.relu(self.bn1(self.fc1(x))))
-        x = self.drop2(F.relu(self.bn2(self.fc2(x))))
-        x = self.fc3(x)
-        x = F.log_softmax(x, -1)
-
+        l1_xyz, l1_points = self.sa1(xyz, norm)          # l1_xyz (B, 3, 512);  l1_points (B, 128, 512)
+        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)  # l2_xyz (B, 3, 128);  l2_points (B, 256, 128)
+        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)  # l3_points (B, 1024)
+        x = l3_points.view(B, 1024)                      # x (B, 1024)
+        x = self.drop1(F.relu(self.bn1(self.fc1(x))))    # x (B, 512)
+        x = self.drop2(F.relu(self.bn2(self.fc2(x))))    # x (B, 256)
+        x = self.fc3(x)                                  # x (B, num_class)
+        x = F.log_softmax(x, -1)                         # x (B, num_class)
 
         return x, l3_points
-
 
 
 class get_loss(nn.Module):
@@ -45,6 +43,6 @@ class get_loss(nn.Module):
         super(get_loss, self).__init__()
 
     def forward(self, pred, target, trans_feat):
-        total_loss = F.nll_loss(pred, target)
+        total_loss = F.nll_loss(pred, target)  # 负对数似然函数
 
         return total_loss

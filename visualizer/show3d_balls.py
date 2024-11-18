@@ -210,7 +210,7 @@ if __name__ == '__main__':
 
     from ShapeNetDataLoader import PartNormalDataset
     root = '../data/shapenetcore_partanno_segmentation_benchmark_v0_normal/'
-    dataset = PartNormalDataset(root = root, npoints=2048, split='test', normal_channel=False)
+    dataset = PartNormalDataset(root=root, npoints=2048, split='test', normal_channel=False)
     idx = np.random.randint(0, len(dataset))
     data = dataset[idx]
     point_set, _, seg = data
@@ -221,5 +221,3 @@ if __name__ == '__main__':
     pred = cmap[seg, :]
     showpoints(point_set, gt, c_pred=pred, waittime=0, showrot=False, magnifyBlue=0, freezerot=False,
                background=(255, 255, 255), normalizecolor=True, ballradius=opt.ballradius)
-
-

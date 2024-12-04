@@ -18,6 +18,8 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 from data_utils.ModelNetDataLoader import ModelNetDataLoader
+from torch.utils.tensorboard import SummaryWriter
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = BASE_DIR
@@ -29,16 +31,16 @@ def parse_args():
     parser = argparse.ArgumentParser('training')
     parser.add_argument('--use_cpu', action='store_true', default=False, help='use cpu mode')
     parser.add_argument('--gpu', type=str, default='0', help='specify gpu device')
-    parser.add_argument('--batch_size', type=int, default=24, help='batch size in training')
-    parser.add_argument('--model', default='pointnet_cls', help='model name [default: pointnet_cls]')
+    parser.add_argument('--batch_size', type=int, default=16, help='batch size in training')
+    parser.add_argument('--model', default='pointnet2_cls_msg', help='model name [default: pointnet2_cls_ssg]')
     parser.add_argument('--num_category', default=40, type=int, choices=[10, 40], help='training on ModelNet10/40')
-    parser.add_argument('--epoch', default=200, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch', default=100, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
     parser.add_argument('--num_point', type=int, default=1024, help='Point Number')
     parser.add_argument('--optimizer', type=str, default='Adam', help='optimizer for training')
-    parser.add_argument('--log_dir', type=str, default=None, help='experiment root')
+    parser.add_argument('--log_dir', type=str, default='pointnet2_cls_msg_with_normals', help='experiment root')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate')
-    parser.add_argument('--use_normals', action='store_true', default=False, help='use normals')
+    parser.add_argument('--use_normals', action='store_true', default=True, help='use normals')
     parser.add_argument('--process_data', action='store_true', default=False, help='save data offline')
     parser.add_argument('--use_uniform_sample', action='store_true', default=False, help='use uniform sampiling')
     return parser.parse_args()
@@ -50,10 +52,12 @@ def inplace_relu(m):
         m.inplace = True
 
 
-def test(model, loader, num_class=40):
+def test(model, criterion, loader, num_class=40):
     mean_correct = []
     class_acc = np.zeros((num_class, 3))
     classifier = model.eval()  # 将模型切换到测试模式：禁用 Dropout, BatchNormalization 等操作
+    mean_loss = 0  # 平均损失
+    batch_total = 0
 
     # 迭代数据集批次
     for j, (points, target) in tqdm(enumerate(loader), total=len(loader)):
@@ -61,9 +65,12 @@ def test(model, loader, num_class=40):
         if not args.use_cpu:
             points, target = points.cuda(), target.cuda()  # 加载到GPU
 
-        points = points.transpose(2, 1)     # (B, 3, N)
-        pred, _ = classifier(points)        # 前向传播
-        pred_choice = pred.data.max(1)[1]   # 预测结果
+        points = points.transpose(2, 1)                     # (B, 3, N)
+        pred, trans_feat = classifier(points)               # 前向传播
+        pred_choice = pred.data.max(1)[1]                   # 预测结果
+        loss = criterion(pred, target.long(), trans_feat)   # 损失计算
+        mean_loss += loss
+        batch_total += 1
 
         # 遍历唯一类别标签
         for cat in np.unique(target.cpu()):
@@ -74,11 +81,12 @@ def test(model, loader, num_class=40):
         correct = pred_choice.eq(target.long().data).cpu().sum()        # 当前批次的TP数量
         mean_correct.append(correct.item() / float(points.size()[0]))   # 当前批次的平均准确率
 
+    mean_loss = mean_loss / batch_total
     class_acc[:, 2] = class_acc[:, 0] / class_acc[:, 1]     # 所有测试集样本中每个类别的平均准确率
     class_acc = np.mean(class_acc[:, 2])                    # 所有类别的平均准确率
     instance_acc = np.mean(mean_correct)                    # 所有测试集样本的平均准确率
 
-    return instance_acc, class_acc
+    return instance_acc, class_acc, mean_loss
 
 
 def main(args):
@@ -104,6 +112,10 @@ def main(args):
     checkpoints_dir.mkdir(exist_ok=True)
     log_dir = exp_dir.joinpath('logs/')
     log_dir.mkdir(exist_ok=True)
+
+    '''Tensorboard'''
+    tb_writer = SummaryWriter(log_dir=exp_dir.joinpath("tensorboard"))
+    tags = ["train_loss", "train_instance_acc", "val_loss", "val_instance_acc", "val_class_acc"]
 
     '''LOG'''
     args = parse_args()
@@ -141,6 +153,10 @@ def main(args):
     criterion = model.get_loss()  # 创建损失函数
     classifier.apply(inplace_relu)  # 将模型中的ReLU激活函数转换为就地操作，使得它直接修改输入的张量，而不返回新的张量
 
+    # 将模型写入tensorboard
+    init_points = torch.zeros((10, 6, 2048)) if args.use_normals else torch.zeros((10, 3, 2048))
+    tb_writer.add_graph(classifier, init_points)
+
     if not args.use_cpu:
         classifier = classifier.cuda()  # 分类器参数加载到GPU中
         criterion = criterion.cuda()  # 损失函数加载到GPU中
@@ -150,7 +166,7 @@ def main(args):
         start_epoch = checkpoint['epoch']  # 提取epoch信息
         classifier.load_state_dict(checkpoint['model_state_dict'])  # 加载最优模型的状态字典
         log_string('Use pretrain model')
-    except:
+    except Exception as e:
         log_string('No existing model, starting training from scratch...')
         start_epoch = 0
 
@@ -181,6 +197,7 @@ def main(args):
         scheduler.step()  # 检查是否更新学习率
 
         # 训练：迭代数据集批次
+        train_loss = 0
         for batch_id, (points, target) in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
             optimizer.zero_grad()  # 优化器梯度清零
 
@@ -195,22 +212,29 @@ def main(args):
             if not args.use_cpu:
                 points, target = points.cuda(), target.cuda()   # 压入GPU
 
-            pred, trans_feat = classifier(points)               # 前向传播: pred—(B, num_class), trans_feat—(B, 1024)
-            loss = criterion(pred, target.long(), trans_feat)   # 损失计算：关联损失和模型
-            pred_choice = pred.data.max(1)[1]                   # 预测类别
-            loss.backward()                                     # 反向传播
-            optimizer.step()                                    # 更新模型参数
-
+            pred, trans_feat = classifier(points)                           # 前向传播: pred—(B, num_class), trans_feat—(B, 1024)
+            loss = criterion(pred, target.long(), trans_feat)               # 损失计算：关联损失和模型
+            pred_choice = pred.data.max(1)[1]                               # 预测类别
+            loss.backward()                                                 # 反向传播
+            optimizer.step()                                                # 更新模型参数
+            train_loss += loss
             correct = pred_choice.eq(target.long().data).cpu().sum()        # 预测正确的样本数
             mean_correct.append(correct.item() / float(points.size()[0]))   # 计算当前batch的平均正确率
             global_step += 1                                                # 更新全局批次
 
         train_instance_acc = np.mean(mean_correct)
+        tb_writer.add_scalar(tags[0], train_loss / len(trainDataLoader), epoch)
+        tb_writer.add_scalar(tags[1], train_instance_acc, epoch)
         log_string('Train Instance Accuracy: %f' % train_instance_acc)
 
         # 测试：不存储中间值进行反向传播
         with torch.no_grad():
-            instance_acc, class_acc = test(classifier.eval(), testDataLoader, num_class=num_class)  # 测试数据集：实例平均准确率 和 类别平均准确率
+            instance_acc, class_acc, mean_loss = test(classifier.eval(), criterion, testDataLoader, num_class=num_class)  # 测试数据集：实例平均准确率 和 类别平均准确率
+
+            # 测试准确度信息写入tensorboard
+            tb_writer.add_scalar(tags[2], mean_loss, epoch)
+            tb_writer.add_scalar(tags[3], instance_acc, epoch)
+            tb_writer.add_scalar(tags[4], class_acc, epoch)
 
             # 检查 实例平均准确率 是否为最优
             if (instance_acc >= best_instance_acc):
@@ -237,6 +261,7 @@ def main(args):
                     'optimizer_state_dict': optimizer.state_dict(),
                 }
                 torch.save(state, savepath)
+
             global_epoch += 1  # 更新全局epoch
 
     logger.info('End of training...')

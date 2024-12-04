@@ -254,3 +254,17 @@ def random_point_dropout(batch_pc, max_dropout_ratio=0.875):
         if len(drop_idx) > 0:
             batch_pc[b, drop_idx, :] = batch_pc[b, 0, :]  # set to the first point
     return batch_pc
+
+
+def occlusion_point_dropout(batch_pc, min_cut_ratio=0.1, max_cut_ratio=1.0):
+    ''' batch_pc: BxNx3 '''
+    B = batch_pc.shape[0]  # 点云样本数
+    batch_max_h = batch_pc.max(1)[:, 2]  # 点云最大高度
+    batch_min_h = batch_pc.min(1)[:, 2]  # 点云最小高度
+    min_cut = np.random.random(B) * min_cut_ratio  # 点云最小高度裁剪比例
+    max_cut = max_cut_ratio - (np.random.random(B) * max_cut_ratio) * (1 - max_cut_ratio)
+    batch_min_cut = ((batch_max_h - batch_min_h) * min_cut + batch_min_h).reshape(B, 1)     # 点云最小裁剪高度
+    batch_max_cut = ((batch_max_h - batch_min_h) * max_cut + batch_min_h).reshape(B, 1)     # 点云最大裁剪高度
+    batch_drop_idx = np.where((batch_pc[:, :, 2] < batch_min_cut) | (batch_pc[:, :, 2] > batch_max_cut))  # 随机生成丢弃点的索引矩阵
+    batch_pc[batch_drop_idx[0], batch_drop_idx[1], :] = batch_pc[batch_drop_idx[0], 0, :]  # set to the first point
+    return batch_pc

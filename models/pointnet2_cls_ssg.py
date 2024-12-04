@@ -32,7 +32,7 @@ class get_model(nn.Module):
         x = l3_points.view(B, 1024)                      # x (B, 1024)
         x = self.drop1(F.relu(self.bn1(self.fc1(x))))    # x (B, 512)
         x = self.drop2(F.relu(self.bn2(self.fc2(x))))    # x (B, 256)
-        x = self.fc3(x)                                  # x (B, num_class)
+        x = self.fc3(x)                                  # x (B, num_class)get_model
         x = F.log_softmax(x, -1)                         # x (B, num_class)
 
         return x, l3_points
@@ -44,5 +44,4 @@ class get_loss(nn.Module):
 
     def forward(self, pred, target, trans_feat):
         total_loss = F.nll_loss(pred, target)  # 负对数似然函数
-
         return total_loss

@@ -61,7 +61,8 @@ class ModelNetDataLoader(Dataset):
             self.catfile = os.path.join(self.root, 'modelnet40_shape_names.txt')
 
         self.cat = [line.rstrip() for line in open(self.catfile)]
-        self.classes = dict(zip(self.cat, range(len(self.cat))))  # 类别名称映射到一个唯一整数 ID
+        self.classes = dict(zip(self.cat, range(len(self.cat))))  # 类别名称映射到一个唯一整数ID
+        self.class_ids = dict(zip(range(len(self.cat)), self.cat))  # ID映射到类别名称
 
         shape_ids = {}
         if self.num_category == 10:

@@ -23,7 +23,7 @@ def square_distance(src, dst):
     """
     Calculate Euclid distance between each two points.
 
-    src^T * dst = xn * xm + yn * ym + zn * zm；
+    src^T * dst = xn * xm + yn * ym + zn * zm;
     sum(src^2, dim=-1) = xn*xn + yn*yn + zn*zn;
     sum(dst^2, dim=-1) = xm*xm + ym*ym + zm*zm;
     dist = (xn - xm)^2 + (yn - ym)^2 + (zn - zm)^2
@@ -45,21 +45,20 @@ def square_distance(src, dst):
 
 def index_points(points, idx):
     """
-
     Input:
-        points: input points data, [B, N, C]
-        idx: sample index data, [B, S]
+        points: input points data, [B, N, 3]
+        idx: sample index data, [B, S, K]
     Return:
-        new_points:, indexed points data, [B, S, C]
+        new_points:, indexed points data, [B, S, K, 3]
     """
     device = points.device
     B = points.shape[0]
-    view_shape = list(idx.shape)  # [B, S]
-    view_shape[1:] = [1] * (len(view_shape) - 1)  # [B, 1], 将view_shape的第一个维度以外的所有维度设置为1
-    repeat_shape = list(idx.shape)  # [B, S]
-    repeat_shape[0] = 1  # [1, S]
-    batch_indices = torch.arange(B, dtype=torch.long).to(device).view(view_shape).repeat(repeat_shape)  # [B,S], view()调整形状; repeat()重复
-    new_points = points[batch_indices, idx, :]
+    view_shape = list(idx.shape)  # [B, S, K]
+    view_shape[1:] = [1] * (len(view_shape) - 1)  # [B, 1, 1] 将view_shape的第一个维度以外的所有维度设置为1
+    repeat_shape = list(idx.shape)  # [B, S, K]
+    repeat_shape[0] = 1  # [1, S, K]
+    batch_indices = torch.arange(B, dtype=torch.long).to(device).view(view_shape).repeat(repeat_shape)  # [B, S, K], view()调整形状; repeat()重复
+    new_points = points[batch_indices, idx, :]  # [B, S, K, 3]
     return new_points
 
 
@@ -74,13 +73,13 @@ def farthest_point_sample(xyz, npoint):
     device = xyz.device
     B, N, C = xyz.shape
     centroids = torch.zeros(B, npoint, dtype=torch.long).to(device)  # 分配质心点内存
-    distance = torch.ones(B, N).to(device) * 1e10  # 分配点集的最小距离内存
+    distance = torch.ones(B, N, dtype=torch.float32).to(device) * 1e10  # 分配点集的最小距离内存
     farthest = torch.randint(0, N, (B,), dtype=torch.long).to(device)  # 随机选取质心点
     batch_indices = torch.arange(B, dtype=torch.long).to(device)  # 批次索引
     for i in range(npoint):
         centroids[:, i] = farthest  # 最远点加入质心点集
         centroid = xyz[batch_indices, farthest, :].view(B, 1, 3)
-        dist = torch.sum((xyz - centroid) ** 2, -1)  # 计算所有点到质心点的距离
+        dist = torch.sum((xyz - centroid) ** 2, -1).to(torch.float32)  # 计算所有点到质心点的距离
         mask = dist < distance  # 对应点的距离是否小于当前记录的最小距离
         distance[mask] = dist[mask]  # 更新最小距离
         farthest = torch.max(distance, -1)[1]  # 迭代作为质心点
@@ -196,7 +195,7 @@ class PointNetSetAbstraction(nn.Module):
 
         # new_xyz: sampled points position data, [B, npoint, C]
         # new_points: sampled points data, [B, npoint, nsample, C+D]
-        new_points = new_points.permute(0, 3, 2, 1)  # [B, C+D, nsample, npoint]
+        new_points = new_points.permute(0, 3, 2, 1).to(torch.float32)  # [B, C+D, nsample, npoint]
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
             new_points = F.relu(bn(conv(new_points)))  # [B, D', nsample, npoint]
@@ -219,8 +218,8 @@ class PointNetSetAbstractionMsg(nn.Module):
             bns = nn.ModuleList()
             last_channel = in_channel + 3
             for out_channel in mlp_list[i]:
-                convs.append(nn.Conv2d(last_channel, out_channel, 1))
-                bns.append(nn.BatchNorm2d(out_channel))
+                convs.append(nn.Conv2d(last_channel, out_channel, 1))   # MLP
+                bns.append(nn.BatchNorm2d(out_channel))                 # BatchNormalization
                 last_channel = out_channel
             self.conv_blocks.append(convs)
             self.bn_blocks.append(bns)
@@ -228,42 +227,42 @@ class PointNetSetAbstractionMsg(nn.Module):
     def forward(self, xyz, points):
         """
         Input:
-            xyz: input points position data, [B, C, N]
+            xyz: input points position data, [B, 3, N]
             points: input points data, [B, D, N]
         Return:
-            new_xyz: sampled points position data, [B, C, S]
+            new_xyz: sampled points position data, [B, 3, S]
             new_points_concat: sample points feature data, [B, D', S]
         """
-        xyz = xyz.permute(0, 2, 1)
+        xyz = xyz.permute(0, 2, 1)              # [B, N, 3]
         if points is not None:
-            points = points.permute(0, 2, 1)
+            points = points.permute(0, 2, 1)    # [B, N, D]
 
         B, N, C = xyz.shape
-        S = self.npoint
-        new_xyz = index_points(xyz, farthest_point_sample(xyz, S))
+        S = self.npoint                                             # 采样点数
+        new_xyz = index_points(xyz, farthest_point_sample(xyz, S))  # 采样点 [B, S, 3]
         new_points_list = []
-        for i, radius in enumerate(self.radius_list):
-            K = self.nsample_list[i]
-            group_idx = query_ball_point(radius, K, xyz, new_xyz)
-            grouped_xyz = index_points(xyz, group_idx)
-            grouped_xyz -= new_xyz.view(B, S, 1, C)
+        for i, radius in enumerate(self.radius_list):               # 遍历采样半径
+            K = self.nsample_list[i]                                # 遍历邻域搜索点数
+            group_idx = query_ball_point(radius, K, xyz, new_xyz)   # 分组搜索索引：[B, S, K]
+            grouped_xyz = index_points(xyz, group_idx)              # 提取邻域点坐标：# [B, S, K, 3]
+            grouped_xyz -= new_xyz.view(B, S, 1, C)                 # 归一化
             if points is not None:
-                grouped_points = index_points(points, group_idx)
-                grouped_points = torch.cat([grouped_points, grouped_xyz], dim=-1)
+                grouped_points = index_points(points, group_idx)    # 提取点特征：[B, S, K, D]
+                grouped_points = torch.cat([grouped_points, grouped_xyz], dim=-1)  # 特征拼接：[B, S, K, D+3]
             else:
                 grouped_points = grouped_xyz
 
-            grouped_points = grouped_points.permute(0, 3, 2, 1)  # [B, D, K, S]
+            grouped_points = grouped_points.permute(0, 3, 2, 1)     # [B, D+3, K, S]
             for j in range(len(self.conv_blocks[i])):
                 conv = self.conv_blocks[i][j]
                 bn = self.bn_blocks[i][j]
-                grouped_points = F.relu(bn(conv(grouped_points)))
+                grouped_points = F.relu(bn(conv(grouped_points)))   # MLP + BatchNorm + ReLU：[B, D', K, S]
             new_points = torch.max(grouped_points, 2)[0]  # [B, D', S]
-            new_points_list.append(new_points)
+            new_points_list.append(new_points)  # [B, D'', S]
 
-        new_xyz = new_xyz.permute(0, 2, 1)
-        new_points_concat = torch.cat(new_points_list, dim=1)
-        return new_xyz, new_points_concat
+        new_xyz = new_xyz.permute(0, 2, 1)  # 采样点 [B, 3, S]
+        new_points_concat = torch.cat(new_points_list, dim=1)  # [B, D', S]
+        return new_xyz, new_points_concat  # 采样点坐标：[B, 3, S] + 采样点特征：[B, D’, S]
 
 
 class PointNetFeaturePropagation(nn.Module):
